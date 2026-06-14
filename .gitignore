@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Datos satelitales pesados (a partir de aqui no se suben al repo)
+datos/*.nc
+datos/**/*.nc
