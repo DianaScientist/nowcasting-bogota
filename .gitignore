@@ -220,3 +220,7 @@ __marimo__/
 # Datos satelitales pesados (a partir de aqui no se suben al repo)
 datos/*.nc
 datos/**/*.nc
+
+# Carpetas temporales de descarga (script de Juanita)
+descarga/radiances/
+descarga/radiances_c/
