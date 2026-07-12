@@ -217,9 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Datos satelitales pesados (a partir de aqui no se suben al repo)
-datos/*.nc
-datos/**/*.nc
+# Datos satelitales descargados
+data/*.nc
+data/**/*.nc
 
 # Carpetas temporales de descarga (script de Juanita)
 descarga/radiances/

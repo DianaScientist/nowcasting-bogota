@@ -1,0 +1,5 @@
+numpy
+pandas
+netCDF4
+GOES
+pyproj
