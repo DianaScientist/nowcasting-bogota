@@ -224,6 +224,7 @@ data/**/*.nc
 # Datos crudos e imágenes satelitales recortadas (no versionar, muy pesado)
 data/
 data_ingestion/cmip_cropped/
+data_ingestion/ground_truth/df_horaria_hora_humeda.parquet
 
 # Carpetas temporales de descarga (script de Juanita)
 descarga/radiances/
