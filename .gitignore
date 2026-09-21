@@ -225,6 +225,8 @@ data/**/*.nc
 data/
 data_ingestion/cmip_cropped/
 data_ingestion/ground_truth/*.parquet
+data_ingestion/satellite/*.parquet
+datasets/*.parquet
 
 # Carpetas temporales de descarga (script de Juanita)
 descarga/radiances/
