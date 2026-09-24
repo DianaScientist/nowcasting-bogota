@@ -232,3 +232,7 @@ datasets/*.parquet
 descarga/radiances/
 descarga/radiances_c/
 
+# ...
+.vscode/
+__pycache__/
+data_ingestion/satellite/cmip_log.txt
