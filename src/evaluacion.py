@@ -1,10 +1,10 @@
-"""Evaluación de pronósticos binarios de lluvia fuerte.
+"""Evaluación de pronósticos binarios de lluvia fuerte (S4a).
 
 Métricas de la tabla de contingencia (POD, FAR, CSI, ETS), elección del
 umbral de decisión por CSI en validación y bootstrap por bloques de tiempo
 local con comparaciones pareadas entre modelos.
 
-Convenciones:
+Convenciones (decisiones de S4a, 12-oct-2026):
 
 - Tabla de contingencia: a = aciertos, b = falsas alarmas, c = sorpresas
   (tormentas sin alerta), d = rechazos correctos.
@@ -317,12 +317,13 @@ def estabilidad_umbral(tablas_bu, pesos, grilla=GRILLA_UMBRALES):
 # Evaluación completa de un conjunto y salida para MLflow
 # ---------------------------------------------------------------------------
 
-def evaluar(timestamps, y, p, umbral, conjunto, B=B_DEFECTO, semilla=42, horas_bloque=24):
+def evaluar(timestamps, y, p, umbral, conjunto, B=B_DEFECTO, semilla=42, horas_bloque=24, con_auc=True):
     """Evalúa un modelo sobre un conjunto con un umbral ya fijado.
 
     Devuelve (metricas_planas, artefactos). `metricas_planas` tiene nombres
     `conjunto_metrica[_ic_inf|_ic_sup]` listos para mlflow.log_metrics;
-    `artefactos` contiene las tablas por bloque y las réplicas.
+    `artefactos` contiene las tablas por bloque y las réplicas. Con `con_auc` agrega
+    AUC y PR-AUC (métricas sin umbral, complementarias) con IC del mismo bootstrap.
     """
     bloques, tablas = tablas_por_bloque(timestamps, y, p, umbral, horas_bloque)
     puntual = metricas(*tablas.sum(0))
@@ -335,6 +336,13 @@ def evaluar(timestamps, y, p, umbral, conjunto, B=B_DEFECTO, semilla=42, horas_b
         planas[f"{conjunto}_{k}"] = puntual[k]
         planas[f"{conjunto}_{k}_ic_inf"], planas[f"{conjunto}_{k}_ic_sup"] = bs.ic[k]
         planas[f"{conjunto}_replicas_nan_{k}"] = bs.n_nan[k]
+    if con_auc:
+        auc, ap = auc_pr(y, p)
+        rep = bootstrap_auc_pr(timestamps, y, p, pesos, bloques, horas_bloque)
+        for k, v in (("auc", auc), ("pr_auc", ap)):
+            planas[f"{conjunto}_{k}"] = v
+            planas[f"{conjunto}_{k}_ic_inf"], planas[f"{conjunto}_{k}_ic_sup"] = _ic(rep[k])
+        planas[f"{conjunto}_prevalencia"] = float(np.mean(np.asarray(y, dtype=float)))
     planas.update({
         f"{conjunto}_n_pares": a + b + c + d,
         f"{conjunto}_n_tormentas": a + c,
@@ -406,7 +414,7 @@ def rachas_positivas(df, col_estacion="estacion", col_tiempo="timestamp", col_et
 
 
 # ===========================================================================
-# ---- Métricas por evento y estratos
+# S4b — Métricas por evento y estratos
 # ===========================================================================
 #
 # Convenciones (decisiones de S4b, 12-oct-2026):
@@ -656,3 +664,69 @@ def resumen_anticipacion(ep):
     return {"n_avisados": int(len(a)), "mediana_h": float(a.median()),
             "q1_h": float(a.quantile(0.25)), "q3_h": float(a.quantile(0.75)),
             "frac_1h": float((a >= 1).mean())}
+
+
+# ===========================================================================
+# Discriminación sin umbral: AUC y PR-AUC (métricas complementarias)
+# ===========================================================================
+#
+# No dependen del umbral de decisión y, con pocos aciertos, son mucho más estables
+# que el CSI. Responden "¿el modelo ordena bien los pares?", mientras el CSI responde
+# "¿alcanza para alertar?". El CSI sigue siendo la métrica principal.
+#
+# PR-AUC = precisión promedio (average precision, la misma definición que
+# sklearn.metrics.average_precision_score). Se lee frente a la prevalencia, que es
+# el valor de un modelo al azar.
+#
+# El bootstrap usa los mismos bloques y pesos que el CSI: cada réplica pondera cada
+# par por las veces que salió su bloque. Los pares se ordenan una sola vez; los
+# empates de probabilidad se tratan como un único escalón (como sklearn).
+
+def _grupos_orden(p):
+    """Orden descendente de p y número de grupo de cada valor distinto (empates juntos)."""
+    p = np.asarray(p, dtype=float)
+    orden = np.argsort(-p, kind="mergesort")
+    ps = p[orden]
+    grupo = np.r_[0, np.cumsum(ps[1:] != ps[:-1])]
+    return orden, grupo, grupo[-1] + 1 if len(grupo) else 0
+
+
+def _auc_ap_ponderado(y_ord, w_ord, grupo, n_grupos):
+    """AUC y precisión promedio con pesos, para pares ya ordenados de mayor a menor p."""
+    wp = np.bincount(grupo, weights=w_ord * y_ord, minlength=n_grupos)
+    wn = np.bincount(grupo, weights=w_ord * (1 - y_ord), minlength=n_grupos)
+    P, N = wp.sum(), wn.sum()
+    if P <= 0 or N <= 0:
+        return np.nan, np.nan
+    tp, fp = np.cumsum(wp), np.cumsum(wn)
+    # AUC: un positivo supera a los negativos de grupos posteriores y empata con los de su grupo
+    neg_debajo = N - fp
+    auc = float(np.sum(wp * (neg_debajo + 0.5 * wn)) / (P * N))
+    # escalones sin peso (días no sorteados en la réplica) no aportan: su ΔR es 0
+    precision = np.divide(tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0)
+    ap = float(np.sum(wp / P * precision))
+    return auc, ap
+
+
+def auc_pr(y, p):
+    """AUC (ROC) y PR-AUC (precisión promedio) puntuales."""
+    y, p = _validar(y, p)
+    orden, grupo, n = _grupos_orden(p)
+    return _auc_ap_ponderado(y[orden].astype(float), np.ones(len(y)), grupo, n)
+
+
+def bootstrap_auc_pr(timestamps, y, p, pesos, bloques, horas_bloque=24):
+    """Réplicas de AUC y PR-AUC con los mismos bloques y pesos que `bootstrap`."""
+    y, p = _validar(y, p)
+    ids = bloque_local(timestamps, horas_bloque)
+    pos_bloque = pd.Series(np.arange(len(bloques)), index=bloques).reindex(ids).to_numpy()
+    if np.isnan(pos_bloque.astype(float)).any():
+        raise ValueError("Hay pares en bloques que no están en `bloques`.")
+    orden, grupo, n = _grupos_orden(p)
+    y_ord = y[orden].astype(float)
+    b_ord = pos_bloque[orden].astype(np.int64)
+    auc = np.empty(len(pesos))
+    ap = np.empty(len(pesos))
+    for r in range(len(pesos)):
+        auc[r], ap[r] = _auc_ap_ponderado(y_ord, pesos[r][b_ord].astype(float), grupo, n)
+    return {"auc": auc, "pr_auc": ap}
