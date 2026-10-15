@@ -10,7 +10,7 @@ Espacio de búsqueda (acordado el 15-oct-2026):
     weight_decay    log-uniforme 1e-6 – 1e-3
     dropout         uniforme 0 – 0.5
     proporcion      1:2:2, 1:4:4, 1:8:8   (positivo : difíciles : aleatorios)
-    bolsa           red_activa+casi_positivo (por defecto de S3a) | nube_fria
+    bolsa           red_activa+casi_positivo (por defecto de S3a) | + nube_fria (variante de S3a)
     perdida         bce | bce+csi0.1 | bce+csi0.5   (BCE + peso · (1 − CSI suave))
 Fijos: canales (32, 64, 128), lote 256, semilla 42, máximo 20 épocas, paciencia 5.
 
@@ -64,7 +64,8 @@ TAM_LOTE = 256
 LOTE_PRED = 8192
 CANALES = (32, 64, 128)
 PROPORCIONES = {"1:2:2": (2, 2), "1:4:4": (4, 4), "1:8:8": (8, 8)}
-BOLSAS = {"red_activa+casi_positivo": ("red_activa", "casi_positivo"), "nube_fria": ("nube_fria",)}
+BOLSAS = {"red_activa+casi_positivo": ("red_activa", "casi_positivo"),
+          "red_activa+casi_positivo+nube_fria": ("red_activa", "casi_positivo", "nube_fria")}  # S3a: + nube fría
 PERDIDAS = {"bce": 0.0, "bce+csi0.1": 0.1, "bce+csi0.5": 0.5}
 
 
