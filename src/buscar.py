@@ -14,6 +14,12 @@ Espacio de búsqueda (acordado el 15-oct-2026):
     perdida         bce | bce+csi0.1 | bce+csi0.5   (BCE + peso · (1 − CSI suave))
 Fijos: canales (32, 64, 128), lote 256, semilla 42, máximo 20 épocas, paciencia 5.
 
+Con --modelo resnet (S8) se busca la ResNet de Fan et al. (2024) con el mismo procedimiento y,
+además, los hiperparámetros de arquitectura que Fan buscó (Tabla A2):
+    filtros         16 | 32 | 64           (filtros iniciales F; Fan: 10–100, óptimo 64)
+    alpha           uniforme 0 – 0.4       (pendiente de la Leaky ReLU; Fan: 0–0.4, óptimo 0.138)
+    dropout         uniforme 0 – 0.4       (Fan: 0–0.4, óptimo 0.074)
+
 Optimizaciones frente a 18-cnn_plana (mismo modelo, mismos datos):
     - El caché completo vive en la GPU (int32, ~6.3 GB) y los parches se arman ahí por
       indexación; no hay DataLoader ni copias CPU→GPU por lote.
@@ -31,7 +37,7 @@ Uso en la VM (dentro de tmux o con nohup):
     python src/buscar.py --L 2 3 4 --apagar             # búsqueda completa y apagado
     python src/buscar.py --L 2 3 4 --horas-max 20 --apagar
 
-Salidas en modelo/salidas_s7/L{L}/: un checkpoint e historial por configuración, la tabla de
+Salidas en modelo/salidas_s7/L{L}/ (CNN plana) o modelo/salidas_s8/L{L}/ (ResNet): un checkpoint e historial por configuración, la tabla de
 configuraciones (configuraciones.csv) y las predicciones de validación de la mejor
 (pred_val_mejor.parquet). Cada configuración es además una corrida de MLflow.
 """
@@ -134,6 +140,17 @@ def perdida_compuesta(peso_csi: float):
     return f
 
 
+# --- Modelos ----------------------------------------------------------------------
+MODELOS = {"cnn_plana": {"sesion": "s7", "etiqueta": "cnn-plana"},
+           "resnet": {"sesion": "s8", "etiqueta": "resnet"}}
+
+
+def construir_modelo(cfg: dict) -> torch.nn.Module:
+    if cfg.get("modelo", "cnn_plana") == "resnet":
+        return cnn.ResNetFan(L=cfg["L"], filtros=cfg["filtros"], alpha=cfg["alpha"], dropout=cfg["dropout"])
+    return cnn.CNNPlana(L=cfg["L"], canales=CANALES, dropout=cfg["dropout"])
+
+
 # --- Una configuración ------------------------------------------------------------
 def entrenar_config(cfg: dict, tr: ConjuntoGPU, pares_tr: pd.DataFrame, val: ConjuntoGPU, y_val: np.ndarray,
                     disp: torch.device, ruta_mejor: Path, informar=None) -> pd.DataFrame:
@@ -143,7 +160,7 @@ def entrenar_config(cfg: dict, tr: ConjuntoGPU, pares_tr: pd.DataFrame, val: Con
     puede lanzar optuna.TrialPruned.
     """
     cnn.fijar_semilla(cfg["semilla"])
-    modelo = cnn.CNNPlana(L=cfg["L"], canales=CANALES, dropout=cfg["dropout"]).to(disp)
+    modelo = construir_modelo(cfg).to(disp)
     opt = torch.optim.AdamW(modelo.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     perdida = perdida_compuesta(cfg["peso_csi"])
     n_d, n_a = PROPORCIONES[cfg["proporcion"]]
@@ -197,14 +214,15 @@ def entrenar_config(cfg: dict, tr: ConjuntoGPU, pares_tr: pd.DataFrame, val: Con
 
 
 # --- Estudio por L ----------------------------------------------------------------
-def configurar_mlflow():
+def configurar_mlflow(modelo: str = "cnn_plana"):
     try:
         import mlflow
     except ImportError:
         return None
     (RAIZ / "mlruns").mkdir(exist_ok=True)
     mlflow.set_tracking_uri(f"sqlite:///{(RAIZ / 'mlruns' / 'mlflow.db').as_posix()}")
-    nombre = "s7-busqueda-cnn-plana"
+    m = MODELOS[modelo]
+    nombre = f"{m['sesion']}-busqueda-{m['etiqueta']}"
     if mlflow.get_experiment_by_name(nombre) is None:
         mlflow.create_experiment(nombre, artifact_location=(RAIZ / "mlruns" / "artefactos").as_uri())
     mlflow.set_experiment(nombre)
@@ -217,7 +235,8 @@ def buscar_L(L: int, args, cache: Cache, imgs: ImagenesGPU, indice, atributos, v
     warnings.filterwarnings("ignore", category=optuna.exceptions.ExperimentalWarning)
 
     sufijo = "-prueba" if args.prueba else ""
-    dir_sal = RAIZ / "modelo" / f"salidas_s7{sufijo}" / f"L{L}"
+    m = MODELOS[args.modelo]
+    dir_sal = RAIZ / "modelo" / f"salidas_{m['sesion']}{sufijo}" / f"L{L}"
     dir_sal.mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
@@ -232,7 +251,7 @@ def buscar_L(L: int, args, cache: Cache, imgs: ImagenesGPU, indice, atributos, v
     almacen = optuna.storages.RDBStorage(
         f"sqlite:///{(RAIZ / 'mlruns' / 'optuna.db').as_posix()}",
         heartbeat_interval=60, grace_period=300)
-    nombre_estudio = f"s7-cnn-plana-L{L}{sufijo}"
+    nombre_estudio = f"{m['sesion']}-{m['etiqueta']}-L{L}{sufijo}"
     try:
         previas = len(optuna.load_study(study_name=nombre_estudio, storage=almacen).trials)
     except KeyError:
@@ -256,13 +275,18 @@ def buscar_L(L: int, args, cache: Cache, imgs: ImagenesGPU, indice, atributos, v
             "L": L,
             "lr": trial.suggest_float("lr", 1e-4, 3e-3, log=True),
             "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True),
-            "dropout": trial.suggest_float("dropout", 0.0, 0.5),
+            "dropout": trial.suggest_float("dropout", 0.0, 0.4 if args.modelo == "resnet" else 0.5),
             "proporcion": trial.suggest_categorical("proporcion", list(PROPORCIONES)),
             "bolsa": trial.suggest_categorical("bolsa", list(BOLSAS)),
             "perdida": trial.suggest_categorical("perdida", list(PERDIDAS)),
             "semilla": SEMILLA, "max_epocas": args.max_epocas, "paciencia": args.paciencia,
-            "canales": CANALES, "tam_lote": TAM_LOTE,
+            "tam_lote": TAM_LOTE, "modelo": args.modelo,
         }
+        if args.modelo == "resnet":
+            cfg["filtros"] = trial.suggest_categorical("filtros", [16, 32, 64])
+            cfg["alpha"] = trial.suggest_float("alpha", 0.0, 0.4)
+        else:
+            cfg["canales"] = CANALES
         cfg["peso_csi"] = PERDIDAS[cfg["perdida"]]
         nombre = f"L{L}_config{trial.number:03d}"
         print(f"\n[{nombre}] {json.dumps({k: cfg[k] for k in trial.params}, default=str)}", flush=True)
@@ -284,7 +308,7 @@ def buscar_L(L: int, args, cache: Cache, imgs: ImagenesGPU, indice, atributos, v
         try:
             if mlflow:
                 mlflow.log_params({k: str(v) for k, v in cfg.items()} | {"trial": trial.number})
-                mlflow.set_tags({"busqueda": f"s7-L{L}{sufijo}", "modelo": "cnn_plana"})
+                mlflow.set_tags({"busqueda": f"{m['sesion']}-L{L}{sufijo}", "modelo": args.modelo})
             t = time.time()
             hist = entrenar_config(cfg, tr[cfg["bolsa"]], pares_tr[cfg["bolsa"]], val, y_val, disp, ruta, informar)
             hist.to_csv(dir_sal / f"historial_{nombre}.csv", index=False)
@@ -320,7 +344,7 @@ def buscar_L(L: int, args, cache: Cache, imgs: ImagenesGPU, indice, atributos, v
         return None
     best = estudio.best_trial
     ck = torch.load(dir_sal / f"L{L}_config{best.number:03d}.pt", map_location=disp, weights_only=False)
-    modelo = cnn.CNNPlana(L=L, canales=CANALES, dropout=ck["cfg"]["dropout"]).to(disp)
+    modelo = construir_modelo(ck["cfg"]).to(disp)
     modelo.load_state_dict(ck["estado"])
     p = predecir_gpu(modelo, val)
     ap = ev.auc_pr(y_val, p)[1]
@@ -334,6 +358,7 @@ def buscar_L(L: int, args, cache: Cache, imgs: ImagenesGPU, indice, atributos, v
 # --- Programa ---------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--modelo", choices=list(MODELOS), default="cnn_plana")
     ap.add_argument("--L", type=int, nargs="+", default=[2, 3, 4])
     ap.add_argument("--n-configs", type=int, default=30, help="configuraciones (completas + podadas) por L")
     ap.add_argument("--max-epocas", type=int, default=20)
@@ -363,7 +388,7 @@ def main():
         val_pares = preparar_pares(indice, atributos, cache, "val", L_COMUN)
         y_val = val_pares.etiqueta.to_numpy()
 
-        mlflow = configurar_mlflow()
+        mlflow = configurar_mlflow(args.modelo)
         for L in args.L:
             if limite is not None and time.time() >= limite:
                 print(f"Tope de {args.horas_max} h alcanzado; L={L} queda para la próxima vez")
