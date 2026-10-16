@@ -28,6 +28,13 @@ Optimizaciones frente a 18-cnn_plana (mismo modelo, mismos datos):
     - Poda: una configuración se corta si su mejor PR-AUC hasta la época k queda bajo la
       mediana de las anteriores en esa misma época (desde la época 4, tras 5 configuraciones).
 
+Extensión S8b (16-oct-2026): en S8 el lr de la ResNet quedó pegado al mínimo (1e-4) y alpha al
+máximo (0.4) en los tres L. `--variante b` corre un estudio aparte (s8b-resnet-L{L}, salidas en
+modelo/salidas_s8b/) con rangos ampliados y lo ya decidido fijo:
+    python src/buscar.py --modelo resnet --variante b --L 2 3 4 --n-configs 25 \
+        --lr-min 1e-5 --alpha-max 0.6 --filtros 16 32 \
+        --bolsas red_activa+casi_positivo+nube_fria --perdidas bce bce+csi0.1 --apagar
+
 Reanudable: el estudio vive en mlruns/optuna.db; si la VM se cae, volver a lanzar el mismo
 comando continúa donde quedó (las configuraciones interrumpidas se marcan como fallidas y
 no cuentan para las 30).
@@ -214,7 +221,7 @@ def entrenar_config(cfg: dict, tr: ConjuntoGPU, pares_tr: pd.DataFrame, val: Con
 
 
 # --- Estudio por L ----------------------------------------------------------------
-def configurar_mlflow(modelo: str = "cnn_plana"):
+def configurar_mlflow(modelo: str = "cnn_plana", variante: str = ""):
     try:
         import mlflow
     except ImportError:
@@ -222,7 +229,7 @@ def configurar_mlflow(modelo: str = "cnn_plana"):
     (RAIZ / "mlruns").mkdir(exist_ok=True)
     mlflow.set_tracking_uri(f"sqlite:///{(RAIZ / 'mlruns' / 'mlflow.db').as_posix()}")
     m = MODELOS[modelo]
-    nombre = f"{m['sesion']}-busqueda-{m['etiqueta']}"
+    nombre = f"{m['sesion']}{variante}-busqueda-{m['etiqueta']}"
     if mlflow.get_experiment_by_name(nombre) is None:
         mlflow.create_experiment(nombre, artifact_location=(RAIZ / "mlruns" / "artefactos").as_uri())
     mlflow.set_experiment(nombre)
@@ -235,7 +242,8 @@ def buscar_L(L: int, args, cache: Cache, imgs: ImagenesGPU, indice, atributos, v
     warnings.filterwarnings("ignore", category=optuna.exceptions.ExperimentalWarning)
 
     sufijo = "-prueba" if args.prueba else ""
-    m = MODELOS[args.modelo]
+    m = dict(MODELOS[args.modelo])
+    m["sesion"] += args.variante                     # S8b: estudio, salidas y experimento aparte
     dir_sal = RAIZ / "modelo" / f"salidas_{m['sesion']}{sufijo}" / f"L{L}"
     dir_sal.mkdir(parents=True, exist_ok=True)
 
@@ -273,18 +281,18 @@ def buscar_L(L: int, args, cache: Cache, imgs: ImagenesGPU, indice, atributos, v
     def objetivo(trial: "optuna.Trial") -> float:
         cfg = {
             "L": L,
-            "lr": trial.suggest_float("lr", 1e-4, 3e-3, log=True),
+            "lr": trial.suggest_float("lr", args.lr_min, 3e-3, log=True),
             "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True),
             "dropout": trial.suggest_float("dropout", 0.0, 0.4 if args.modelo == "resnet" else 0.5),
             "proporcion": trial.suggest_categorical("proporcion", list(PROPORCIONES)),
-            "bolsa": trial.suggest_categorical("bolsa", list(BOLSAS)),
-            "perdida": trial.suggest_categorical("perdida", list(PERDIDAS)),
+            "bolsa": trial.suggest_categorical("bolsa", args.bolsas),
+            "perdida": trial.suggest_categorical("perdida", args.perdidas),
             "semilla": SEMILLA, "max_epocas": args.max_epocas, "paciencia": args.paciencia,
             "tam_lote": TAM_LOTE, "modelo": args.modelo,
         }
         if args.modelo == "resnet":
-            cfg["filtros"] = trial.suggest_categorical("filtros", [16, 32, 64])
-            cfg["alpha"] = trial.suggest_float("alpha", 0.0, 0.4)
+            cfg["filtros"] = trial.suggest_categorical("filtros", args.filtros)
+            cfg["alpha"] = trial.suggest_float("alpha", 0.0, args.alpha_max)
         else:
             cfg["canales"] = CANALES
         cfg["peso_csi"] = PERDIDAS[cfg["perdida"]]
@@ -366,6 +374,13 @@ def main():
     ap.add_argument("--horas-max", type=float, default=None, help="tope de tiempo total (protege el presupuesto)")
     ap.add_argument("--prueba", action="store_true", help="2 configuraciones × 2 épocas en L=2, estudio aparte")
     ap.add_argument("--apagar", action="store_true", help="apagar la VM al terminar (también si hay error)")
+    # Espacio de búsqueda (los valores por defecto reproducen S7 y S8)
+    ap.add_argument("--variante", default="", help="sufijo de sesión para un estudio aparte (S8b: 'b')")
+    ap.add_argument("--lr-min", type=float, default=1e-4)
+    ap.add_argument("--alpha-max", type=float, default=0.4)
+    ap.add_argument("--filtros", type=int, nargs="+", default=[16, 32, 64])
+    ap.add_argument("--bolsas", nargs="+", choices=list(BOLSAS), default=list(BOLSAS))
+    ap.add_argument("--perdidas", nargs="+", choices=list(PERDIDAS), default=list(PERDIDAS))
     args = ap.parse_args()
     if args.prueba:
         args.L, args.n_configs, args.max_epocas = args.L if args.L != [2, 3, 4] else [2], 2, 2
@@ -388,7 +403,7 @@ def main():
         val_pares = preparar_pares(indice, atributos, cache, "val", L_COMUN)
         y_val = val_pares.etiqueta.to_numpy()
 
-        mlflow = configurar_mlflow(args.modelo)
+        mlflow = configurar_mlflow(args.modelo, args.variante)
         for L in args.L:
             if limite is not None and time.time() >= limite:
                 print(f"Tope de {args.horas_max} h alcanzado; L={L} queda para la próxima vez")
