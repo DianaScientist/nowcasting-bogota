@@ -312,14 +312,14 @@ def buscar_L(L: int, args, cache: Cache, imgs: ImagenesGPU, indice, atributos, v
             t = time.time()
             hist = entrenar_config(cfg, tr[cfg["bolsa"]], pares_tr[cfg["bolsa"]], val, y_val, disp, ruta, informar)
             hist.to_csv(dir_sal / f"historial_{nombre}.csv", index=False)
-            m = hist.loc[hist.val_pr_auc.idxmax()]
-            for k, v in {"epoca_mejor": int(m.epoca), "val_auc": float(m.val_auc), "val_csi_max": float(m.val_csi_max),
-                         "val_umbral": float(m.val_umbral), "epocas": int(hist.epoca.max()),
+            fila = hist.loc[hist.val_pr_auc.idxmax()]
+            for k, v in {"epoca_mejor": int(fila.epoca), "val_auc": float(fila.val_auc), "val_csi_max": float(fila.val_csi_max),
+                         "val_umbral": float(fila.val_umbral), "epocas": int(hist.epoca.max()),
                          "minutos": (time.time() - t) / 60}.items():
                 trial.set_user_attr(k, v)
             if mlflow:
-                mlflow.log_metrics({"mejor_val_pr_auc": float(m.val_pr_auc), "epoca_mejor": int(m.epoca)})
-            return float(m.val_pr_auc)
+                mlflow.log_metrics({"mejor_val_pr_auc": float(fila.val_pr_auc), "epoca_mejor": int(fila.epoca)})
+            return float(fila.val_pr_auc)
         except optuna.TrialPruned:
             if mlflow:
                 mlflow.set_tag("estado", "podada")
