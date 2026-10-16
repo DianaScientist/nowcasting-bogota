@@ -72,6 +72,64 @@ class CNNPlana(nn.Module):
         return self.cabeza(self.cuerpo(x)).squeeze(1)
 
 
+class _BloqueConvFan(nn.Sequential):
+    """Bloque convolucional de Fan et al. (2024, Sec. 2b): conv → Leaky ReLU → BN → dropout."""
+
+    def __init__(self, c_in: int, c_out: int, k: int, stride: int, alpha: float, dropout: float):
+        super().__init__(
+            nn.Conv2d(c_in, c_out, k, stride=stride, padding=k // 2, bias=False),
+            nn.LeakyReLU(alpha, inplace=True),
+            nn.BatchNorm2d(c_out),
+            nn.Dropout(dropout),
+        )
+
+
+class _BloqueResidual(nn.Module):
+    """Dos bloques convolucionales 3×3 + atajo. Con reducción, la primera conv y el atajo (1×1) usan paso 2."""
+
+    def __init__(self, c_in: int, c_out: int, reducir: bool, alpha: float, dropout: float):
+        super().__init__()
+        s = 2 if reducir else 1
+        self.cuerpo = nn.Sequential(_BloqueConvFan(c_in, c_out, 3, s, alpha, dropout),
+                                    _BloqueConvFan(c_out, c_out, 3, 1, alpha, dropout))
+        self.atajo = (nn.Identity() if (s == 1 and c_in == c_out)
+                      else nn.Conv2d(c_in, c_out, 1, stride=s, bias=False))
+
+    def forward(self, x):
+        return self.cuerpo(x) + self.atajo(x)
+
+
+class ResNetFan(nn.Module):
+    """
+    Peldaño 4: ResNet según Fan et al. (2024, Sec. 2b y Fig. 2).
+        bloque conv 7×7 (F filtros) → 6 bloques residuales (F, F, 2F, 2F, 4F, 4F; reducción en el 3.º
+        y el 5.º) → promedio 2×2 con paso 2 → aplanado → dos capas densas → logit.
+    Con parche 32×32: 32 → 32 → 16 → 8 → 4 (tras el promedio). Fan no informa el ancho de las capas
+    densas; aquí la oculta tiene `densa` unidades (decisión propia, fija).
+    """
+
+    def __init__(self, L: int, n_bandas: int = 5, filtros: int = 64, alpha: float = 0.1,
+                 dropout: float = 0.1, densa: int = 64, lado: int = 32):
+        super().__init__()
+        F = filtros
+        anchos = [F, F, 2 * F, 2 * F, 4 * F, 4 * F]
+        reduce = [False, False, True, False, True, False]
+        capas, c = [_BloqueConvFan(n_bandas * L, F, 7, 1, alpha, dropout)], F
+        for w, r in zip(anchos, reduce):
+            capas.append(_BloqueResidual(c, w, r, alpha, dropout))
+            c = w
+        self.cuerpo = nn.Sequential(*capas)
+        lado_final = lado // 4 // 2
+        self.cabeza = nn.Sequential(
+            nn.AvgPool2d(2, stride=2), nn.Flatten(),
+            nn.Linear(c * lado_final * lado_final, densa), nn.LeakyReLU(alpha, inplace=True), nn.Dropout(dropout),
+            nn.Linear(densa, 1))
+        self.L = L
+
+    def forward(self, x):
+        return self.cabeza(self.cuerpo(x)).squeeze(1)
+
+
 def n_parametros(modelo: nn.Module) -> int:
     return sum(p.numel() for p in modelo.parameters() if p.requires_grad)
 
