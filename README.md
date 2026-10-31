@@ -4,7 +4,7 @@ Código de la tesis de Maestría en Ciencia de Datos (Universidad Austral) de Di
 
 Cada ejemplo es un par (estación, instante t). La entrada son parches de 32 × 32 píxeles de las bandas 8, 9, 10, 13 y 14 del ABI en t y en las L − 1 imágenes previas (L = 2, 3 o 4). La etiqueta indica si en la estación ocurre lluvia fuerte en la ventana (t + 1 h, t + 3 h], según un umbral propio de cada estación (percentil 95 de 2024). Se comparan cuatro modelos de complejidad creciente: umbral sobre el percentil 10 de C13, regresión logística, CNN plana y ResNet. Entrenamiento: 1-ene a 14-nov-2024; validación: 15-nov a 31-dic-2024; prueba: 2025, abierta una sola vez.
 
-> **Versión citable:** `v1.0-tesis` · DOI: [10.5281/zenodo.XXXXXXX](https://doi.org/10.5281/zenodo.XXXXXXX)
+> **Versión citable:** `v1.0-tesis`, archivada en Zenodo.
 
 ## Estructura
 
@@ -41,4 +41,4 @@ La búsqueda de hiperparámetros y el congelamiento de las redes se corrieron en
 
 ## Licencia y cita
 
-Código bajo licencia MIT (ver `LICENSE`). Si usas este trabajo, cita la versión archivada en Zenodo (DOI arriba).
+Código bajo licencia MIT (ver `LICENSE`). Si usas este trabajo, cita la versión archivada en Zenodo.
